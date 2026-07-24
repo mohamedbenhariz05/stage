@@ -5,6 +5,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.example.dto.ChatResponse;
+import org.example.model.Cycle;
+import org.example.model.Formateur;
+import org.example.model.Participant;
+import org.example.repo.CycleRepo;
+import org.example.repo.FormateurRepo;
+import org.example.repo.ParticipantRepo;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -28,6 +34,10 @@ public class ChatService {
     private static final int MAX_HISTORY_MESSAGES = 20;
 
     private final ObjectMapper objectMapper;
+    private final CycleRepo cycleRepo;
+    private final FormateurRepo formateurRepo;
+    private final ParticipantRepo participantRepo;
+
     private final Map<String, Deque<ChatMessage>> conversations = new ConcurrentHashMap<>();
 
     @Value("${openrouter.base-url:https://openrouter.ai/api/v1}")
@@ -134,13 +144,79 @@ public class ChatService {
         return responseBody.length() > 300 ? responseBody.substring(0, 300) + "..." : responseBody;
     }
 
+    private String buildSystemPrompt() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Vous êtes l'assistant virtuel intelligent de l'application de gestion des formations et cycles.\n");
+        sb.append("Votre rôle est de répondre aux questions des utilisateurs de manière claire, polie et concise en vous basant sur les données actuelles de l'application ci-dessous et l'historique de la conversation.\n\n");
+
+        sb.append("--- DONNÉES ACTUELLES DE L'APPLICATION ---\n\n");
+
+        sb.append("1. CYCLES DE FORMATION :\n");
+        List<Cycle> cycles = cycleRepo.findAll();
+        if (cycles.isEmpty()) {
+            sb.append("  (Aucun cycle de formation enregistré pour le moment)\n");
+        } else {
+            for (Cycle c : cycles) {
+                sb.append(String.format("  - ID: %d | N° Action: %s | Thème: %s | Dates: du %s au %s | Salle: %d | Formateur principal: %s",
+                        c.getId(),
+                        c.getNumAct(),
+                        c.getTheme(),
+                        c.getDateDeb(),
+                        c.getDateFin(),
+                        c.getNumSalle(),
+                        c.getForm1()));
+                if (c.getForm2() != null && !c.getForm2().isBlank()) {
+                    sb.append(" | Formateur 2: ").append(c.getForm2());
+                }
+                if (c.getForm3() != null && !c.getForm3().isBlank()) {
+                    sb.append(" | Formateur 3: ").append(c.getForm3());
+                }
+                sb.append("\n");
+            }
+        }
+        sb.append("\n");
+
+        sb.append("2. FORMATEURS :\n");
+        List<Formateur> formateurs = formateurRepo.findAll();
+        if (formateurs.isEmpty()) {
+            sb.append("  (Aucun formateur enregistré pour le moment)\n");
+        } else {
+            for (Formateur f : formateurs) {
+                sb.append(String.format("  - ID: %d | Nom & Prénom: %s | Spécialité: %s | Direction: %s | Entreprise: %s\n",
+                        f.getId(),
+                        f.getNomPrenom(),
+                        f.getSpecialite(),
+                        f.getDirection(),
+                        f.getEntreprise()));
+            }
+        }
+        sb.append("\n");
+
+        sb.append("3. PARTICIPANTS :\n");
+        List<Participant> participants = participantRepo.findAll();
+        if (participants.isEmpty()) {
+            sb.append("  (Aucun participant enregistré pour le moment)\n");
+        } else {
+            for (Participant p : participants) {
+                sb.append(String.format("  - ID: %d | Nom & Prénom: %s | CIN: %s | Entreprise: %s | Thème: %s | Salle: %d | Date Début: %s | Email: %s\n",
+                        p.getId(),
+                        p.getNomPrenom(),
+                        p.getCin(),
+                        p.getEntreprise(),
+                        p.getTheme(),
+                        p.getNumSalle(),
+                        p.getDateDebut(),
+                        p.getMail() != null ? p.getMail() : "Non renseigné"));
+            }
+        }
+        sb.append("\n--- FIN DES DONNÉES ---");
+
+        return sb.toString();
+    }
+
     private List<OpenRouterMessage> buildMessages(Deque<ChatMessage> history) {
         List<OpenRouterMessage> messages = new ArrayList<>();
-        messages.add(new OpenRouterMessage("system", """
-                You are a helpful assistant. Use the current conversation history as memory.
-                If the user asks what they told you earlier, answer from the conversation history.
-                Do not say you cannot remember earlier messages when the answer is present in the history.
-                """));
+        messages.add(new OpenRouterMessage("system", buildSystemPrompt()));
         for (ChatMessage chatMessage : history) {
             messages.add(new OpenRouterMessage(chatMessage.role(), chatMessage.content()));
         }

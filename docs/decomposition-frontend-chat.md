@@ -1,39 +1,209 @@
-# Decomposition frontend du module Chat
+# Guide frontend - Connexion au backend Chat
 
 ## 1. Objectif
 
-Ce document decrit la decomposition du frontend a developper pour consommer le backend du module Chat base sur `ChatService.java`.
+Ce document explique comment connecter un frontend au backend deploye :
 
-Le backend expose une fonctionnalite de conversation avec un assistant IA via OpenRouter, configure par defaut avec le modele `openai/gpt-oss-120b:free`. Le frontend doit permettre a un utilisateur connecte d'envoyer des messages, recevoir les reponses de l'assistant, conserver le `conversationId` courant et gerer les erreurs de communication.
+```text
+https://stage-vmp6.onrender.com
+```
 
-## 2. Fonctionnement backend a respecter
+Le backend expose une authentification JWT et un module Chat base sur OpenRouter. Le frontend doit :
 
-### Endpoint principal
+- inscrire ou connecter un utilisateur ;
+- utiliser les valeurs saisies dans les formulaires, sans identifiants hardcodes ;
+- stocker le JWT retourne par le backend ;
+- envoyer les messages au endpoint `/chat` avec `Authorization: Bearer <token>` ;
+- conserver le `conversationId` courant pendant la discussion ;
+- afficher les reponses et les erreurs de maniere claire.
+- bloquer les pages protegees tant que l'utilisateur n'est pas connecte.
+
+## 2. Configuration frontend
+
+Creer une variable d'environnement pour eviter de dupliquer l'URL dans le code.
+
+### Vite / React
+
+```env
+VITE_API_BASE_URL=https://stage-vmp6.onrender.com
+```
+
+Utilisation :
+
+```ts
+export const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ?? "https://stage-vmp6.onrender.com";
+```
+
+### Next.js
+
+```env
+NEXT_PUBLIC_API_BASE_URL=https://stage-vmp6.onrender.com
+```
+
+Utilisation :
+
+```ts
+export const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://stage-vmp6.onrender.com";
+```
+
+## 3. Authentification
+
+Le module Chat est protege. Il faut d'abord appeler `/auth/register` ou `/auth/login`.
+
+Important : le frontend ne doit pas hardcoder `username` ou `password` dans le code de login. Les valeurs doivent venir des champs du formulaire.
+
+### Inscription
 
 ```http
-POST /chat
-Authorization: Bearer <jwt>
+POST https://stage-vmp6.onrender.com/auth/register
 Content-Type: application/json
 ```
 
-### Corps de la requete
+```json
+{
+  "username": "<valeur-du-formulaire>",
+  "password": "<valeur-du-formulaire>"
+}
+```
+
+Reponse :
 
 ```json
 {
-  "conversationId": "optionnel",
-  "message": "Bonjour"
+  "token": "jwt-token",
+  "username": "<username>"
+}
+```
+
+### Connexion
+
+```http
+POST https://stage-vmp6.onrender.com/auth/login
+Content-Type: application/json
+```
+
+```json
+{
+  "username": "<valeur-du-formulaire>",
+  "password": "<valeur-du-formulaire>"
+}
+```
+
+Reponse :
+
+```json
+{
+  "token": "jwt-token",
+  "username": "<username>"
+}
+```
+
+Le frontend peut stocker le token dans `localStorage` pour un projet simple :
+
+```ts
+localStorage.setItem("token", data.token);
+localStorage.setItem("username", data.username);
+```
+
+Pour une application de production, preferer une strategie plus stricte contre XSS, par exemple cookie HTTP-only si le backend est adapte.
+
+## 4. Routes et acces frontend
+
+Avant connexion, l'utilisateur ne doit pouvoir utiliser que :
+
+- `Home` ;
+- `Login` ;
+- `Register` si l'inscription est exposee dans l'interface.
+
+Toutes les autres pages doivent etre protegees :
+
+- `Chat` ;
+- tableau de bord ;
+- pages participants, formateurs, cycles ou autres donnees metier ;
+- toute action qui appelle une route backend protegee.
+
+Regles frontend :
+
+- si aucun token n'existe, rediriger vers `/login` ;
+- si le token est invalide ou expire, supprimer le token local et rediriger vers `/login` ;
+- ne jamais afficher le formulaire Chat a un utilisateur non connecte ;
+- ne jamais envoyer une requete `/chat` sans `Authorization: Bearer <token>`.
+
+Exemple de protection de route :
+
+```tsx
+import { Navigate } from "react-router-dom";
+
+type ProtectedRouteProps = {
+  children: React.ReactNode;
+};
+
+export function ProtectedRoute({ children }: ProtectedRouteProps) {
+  const token = localStorage.getItem("token");
+
+  if (!token) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return children;
+}
+```
+
+Exemple d'utilisation :
+
+```tsx
+<Route path="/" element={<HomePage />} />
+<Route path="/login" element={<LoginPage />} />
+<Route path="/register" element={<RegisterPage />} />
+<Route
+  path="/chat"
+  element={
+    <ProtectedRoute>
+      <ChatPage />
+    </ProtectedRoute>
+  }
+/>
+```
+
+## 5. Endpoint Chat
+
+### Requete
+
+```http
+POST https://stage-vmp6.onrender.com/chat
+Authorization: Bearer <jwt-token>
+Content-Type: application/json
+```
+
+Premier message :
+
+```json
+{
+  "message": "Bonjour, peux-tu m'aider ?"
+}
+```
+
+Messages suivants dans la meme conversation :
+
+```json
+{
+  "conversationId": "uuid-retourne-par-le-backend",
+  "message": "Continue avec plus de details"
 }
 ```
 
 Regles importantes :
 
-- `message` est obligatoire.
+- `message` est obligatoire et ne doit pas etre vide.
 - `conversationId` est optionnel au premier message.
 - Si `conversationId` est absent ou vide, le backend cree une nouvelle conversation.
-- Le backend utilise l'utilisateur authentifie pour separer les conversations.
-- L'historique est garde cote backend en memoire, avec une limite de 20 messages.
+- Le backend separe les conversations par utilisateur authentifie.
+- L'historique est garde en memoire cote backend, avec une limite de 20 messages.
+- Si le serveur redemarre, l'historique cote backend est perdu.
 
-### Reponse attendue
+### Reponse
 
 ```json
 {
@@ -42,129 +212,21 @@ Regles importantes :
 }
 ```
 
-### Erreurs possibles
+Le frontend doit sauvegarder `conversationId` apres chaque reponse et le renvoyer au prochain message.
 
-```json
-{
-  "message": "Validation failed",
-  "errors": {
-    "message": "must not be blank"
-  }
-}
-```
-
-```json
-{
-  "message": "Could not connect to OpenRouter"
-}
-```
-
-Le frontend doit donc gerer :
-
-- erreur 400 si le message est vide ;
-- erreur 401/403 si l'utilisateur n'est pas authentifie ;
-- erreur 503 si OpenRouter est indisponible ou si la cle API n'est pas configuree ;
-- etat de chargement pendant l'attente de la reponse.
-
-### Configuration IA cote backend
-
-Le backend appelle l'API OpenRouter `POST /chat/completions` avec le modele configure dans `openrouter.model`.
-
-Variables d'environnement attendues :
-
-```text
-OPENROUTER_API_KEY=<cle-api-openrouter>
-OPENROUTER_MODEL=openai/gpt-oss-120b:free
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-```
-
-La cle API doit rester dans une variable d'environnement locale ou dans un gestionnaire de secrets. Elle ne doit pas etre ajoutee dans le code source ni dans ce document.
-
-## 3. Perimetre frontend
-
-Le frontend du module Chat peut etre decoupe en quatre blocs :
-
-1. Interface utilisateur de conversation.
-2. Integration API avec le backend.
-3. Gestion de l'etat de conversation.
-4. Gestion de l'authentification, des erreurs et des tests.
-
-## 4. Repartition sur deux personnes
-
-## Personne 1 : Interface Chat et experience utilisateur
-
-### Responsabilites
-
-La premiere personne est responsable de la partie visible par l'utilisateur.
-
-Elle doit developper :
-
-- la page ou le composant principal du chat ;
-- la zone d'affichage des messages utilisateur et assistant ;
-- le champ de saisie du message ;
-- le bouton d'envoi ;
-- l'etat de chargement pendant que l'assistant repond ;
-- l'affichage des erreurs simples dans l'interface ;
-- le comportement responsive pour desktop et mobile.
-
-### Composants proposes
-
-```text
-ChatPage
-ChatWindow
-MessageList
-MessageBubble
-ChatInput
-ChatError
-ChatLoadingIndicator
-```
-
-### Taches detaillees
-
-- Creer l'ecran principal du chat.
-- Afficher les messages dans l'ordre chronologique.
-- Distinguer visuellement les messages de l'utilisateur et ceux de l'assistant.
-- Desactiver le bouton d'envoi lorsque le message est vide.
-- Desactiver l'input pendant l'envoi si necessaire.
-- Afficher un indicateur "assistant en train de repondre".
-- Faire defiler automatiquement vers le dernier message.
-- Prevoir un bouton ou une action "nouvelle conversation" qui remet le `conversationId` a `null` et vide les messages locaux.
-
-### Livrables
-
-- Composants UI du chat.
-- Styles CSS ou composants de design.
-- Gestion des etats visuels : vide, chargement, erreur, conversation active.
-- Tests d'affichage si le projet frontend utilise une librairie de tests.
-
-## Personne 2 : API, etat et integration backend
-
-### Responsabilites
-
-La deuxieme personne est responsable de la logique technique entre le frontend et le backend.
-
-Elle doit developper :
-
-- le service API qui appelle `POST /chat` ;
-- l'ajout du token JWT dans l'en-tete `Authorization` ;
-- la gestion du `conversationId` retourne par le backend ;
-- la gestion de l'etat local de la conversation ;
-- la gestion centralisee des erreurs backend ;
-- les tests de l'integration API.
-
-### Fichiers ou modules proposes
-
-```text
-api/chatApi
-hooks/useChat
-types/chat
-utils/apiError
-auth/tokenStorage
-```
-
-### Types frontend proposes
+## 6. Types TypeScript recommandes
 
 ```ts
+export type LoginRequest = {
+  username: string;
+  password: string;
+};
+
+export type LoginResponse = {
+  token: string;
+  username: string;
+};
+
 export type ChatRequest = {
   conversationId?: string | null;
   message: string;
@@ -184,24 +246,58 @@ export type ChatMessage = {
 };
 ```
 
-### Taches detaillees
+## 7. Service API
 
-- Creer une fonction `sendChatMessage(request)` qui appelle le backend.
-- Ajouter le token JWT dans la requete.
-- Envoyer `conversationId` uniquement s'il existe deja.
-- Recuperer `conversationId` depuis la reponse et le stocker cote frontend.
-- Ajouter le message utilisateur dans l'etat local avant l'appel API.
-- Ajouter la reponse assistant apres le retour API.
-- Gerer les erreurs :
-  - message vide ;
-  - utilisateur non connecte ;
-  - serveur indisponible ;
-  - OpenRouter indisponible ou cle API manquante.
-- Exposer une fonction `resetConversation()` pour commencer une nouvelle conversation.
-
-### Exemple de service API
+Creer un fichier comme `src/api/backendApi.ts`.
 
 ```ts
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ?? "https://stage-vmp6.onrender.com";
+
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message =
+      data?.message ??
+      data?.error ??
+      `Request failed with status ${response.status}`;
+    throw new Error(message);
+  }
+
+  return data as T;
+}
+
+export async function login(
+  username: string,
+  password: string
+): Promise<LoginResponse> {
+  const response = await fetch(`${API_BASE_URL}/auth/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ username, password }),
+  });
+
+  return readJsonResponse<LoginResponse>(response);
+}
+
+export async function register(
+  username: string,
+  password: string
+): Promise<LoginResponse> {
+  const response = await fetch(`${API_BASE_URL}/auth/register`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ username, password }),
+  });
+
+  return readJsonResponse<LoginResponse>(response);
+}
+
 export async function sendChatMessage(
   request: ChatRequest,
   token: string
@@ -212,35 +308,175 @@ export async function sendChatMessage(
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify(request),
+    body: JSON.stringify({
+      message: request.message,
+      ...(request.conversationId
+        ? { conversationId: request.conversationId }
+        : {}),
+    }),
   });
 
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(data.message || "Erreur lors de l'envoi du message");
-  }
-
-  return data;
+  return readJsonResponse<ChatResponse>(response);
 }
 ```
 
-### Livrables
+Les fonctions `login` et `register` recoivent `username` et `password` en parametres. Ces valeurs doivent venir du state du formulaire, par exemple `useState`, React Hook Form ou Formik. Ne pas mettre de valeurs comme `"demo"` ou `"demo123"` dans le code applicatif.
 
-- Service API du chat.
-- Hook ou store de gestion de conversation.
-- Types TypeScript si le frontend utilise TypeScript.
-- Gestion des erreurs backend.
-- Tests unitaires du service API et du hook/store.
+Exemple minimal de formulaire login :
 
-## 5. Contrat entre les deux personnes
+```tsx
+import { FormEvent, useState } from "react";
+import { login } from "../api/backendApi";
 
-Pour eviter les conflits, les deux personnes doivent se mettre d'accord sur une interface commune.
+export function LoginPage() {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
 
-### Interface proposee pour le composant UI
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setIsLoading(true);
+
+    try {
+      const data = await login(username, password);
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("username", data.username);
+    } catch (exception) {
+      setError(
+        exception instanceof Error
+          ? exception.message
+          : "Connexion impossible."
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input
+        value={username}
+        onChange={(event) => setUsername(event.target.value)}
+        placeholder="Nom utilisateur"
+        autoComplete="username"
+      />
+      <input
+        value={password}
+        onChange={(event) => setPassword(event.target.value)}
+        placeholder="Mot de passe"
+        type="password"
+        autoComplete="current-password"
+      />
+      <button disabled={isLoading || !username || !password} type="submit">
+        Se connecter
+      </button>
+      {error ? <p>{error}</p> : null}
+    </form>
+  );
+}
+```
+
+## 8. Hook React propose
+
+Creer un fichier comme `src/hooks/useChat.ts`.
+
+```ts
+import { useState } from "react";
+import { sendChatMessage } from "../api/backendApi";
+
+export function useChat(token: string | null) {
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function sendMessage(message: string) {
+    const cleanMessage = message.trim();
+
+    if (!cleanMessage) {
+      setError("Le message ne peut pas etre vide.");
+      return;
+    }
+
+    if (!token) {
+      setError("Vous devez etre connecte pour utiliser le chat.");
+      return;
+    }
+
+    const userMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: cleanMessage,
+      createdAt: new Date().toISOString(),
+      status: "sending",
+    };
+
+    setMessages((current) => [...current, userMessage]);
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await sendChatMessage(
+        { conversationId, message: cleanMessage },
+        token
+      );
+
+      setConversationId(response.conversationId);
+      setMessages((current) => [
+        ...current.map((item) =>
+          item.id === userMessage.id ? { ...item, status: "sent" } : item
+        ),
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: response.message,
+          createdAt: new Date().toISOString(),
+          status: "sent",
+        },
+      ]);
+    } catch (exception) {
+      const message =
+        exception instanceof Error
+          ? exception.message
+          : "Erreur pendant l'envoi du message.";
+
+      setError(message);
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === userMessage.id ? { ...item, status: "error" } : item
+        )
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  function resetConversation() {
+    setConversationId(null);
+    setMessages([]);
+    setError(null);
+  }
+
+  return {
+    conversationId,
+    messages,
+    isLoading,
+    error,
+    sendMessage,
+    resetConversation,
+  };
+}
+```
+
+## 9. Interface attendue
+
+Le composant UI du chat peut consommer cette interface :
 
 ```ts
 type UseChatResult = {
+  conversationId: string | null;
   messages: ChatMessage[];
   isLoading: boolean;
   error: string | null;
@@ -249,58 +485,128 @@ type UseChatResult = {
 };
 ```
 
-La personne 1 utilise cette interface sans connaitre les details de l'API.
+Composants recommandes :
 
-La personne 2 implemente cette interface avec l'appel backend reel.
+```text
+ChatPage
+ChatWindow
+MessageList
+MessageBubble
+ChatInput
+ChatError
+ChatLoadingIndicator
+```
 
-## 6. Scenario utilisateur principal
+Comportements importants :
 
-1. L'utilisateur ouvre la page Chat.
-2. Il ecrit un message.
-3. Il clique sur envoyer.
-4. Le frontend ajoute le message utilisateur dans la liste.
-5. Le frontend appelle `POST /chat`.
-6. Le backend cree ou reutilise une conversation.
-7. Le backend appelle OpenRouter.
-8. Le backend retourne `conversationId` et `message`.
-9. Le frontend stocke le `conversationId`.
-10. Le frontend affiche la reponse de l'assistant.
+- afficher les messages dans l'ordre chronologique ;
+- differencier visuellement les messages utilisateur et assistant ;
+- desactiver le bouton d'envoi si l'input est vide ;
+- afficher un etat de chargement pendant la reponse ;
+- scroller automatiquement vers le dernier message ;
+- proposer un bouton "Nouvelle conversation" qui appelle `resetConversation()`.
 
-## 7. Points d'attention
+## 10. Gestion des erreurs
 
-- Le backend ne fournit pas d'endpoint pour lister les conversations.
-- Le backend ne persiste pas l'historique en base de donnees.
-- Si le serveur redemarre, l'historique des conversations est perdu.
-- Le frontend peut garder les messages localement pour l'affichage, mais la memoire officielle de la conversation est cote backend pendant l'execution du serveur.
-- Le module necessite un utilisateur authentifie, car `/chat` est protege par JWT.
-- La reponse peut prendre plusieurs secondes, car le backend attend OpenRouter avec un timeout de 60 secondes.
+Le backend peut retourner ces erreurs principales.
 
-## 8. Planning propose
+### Validation
 
-### Jour 1
+Status : `400`
 
-- Personne 1 : maquette et composants UI principaux.
-- Personne 2 : service API, types et hook/store `useChat`.
+```json
+{
+  "message": "Validation failed",
+  "errors": {
+    "message": "must not be blank"
+  }
+}
+```
 
-### Jour 2
+Action frontend : afficher un message simple, par exemple `Le message est obligatoire.`
 
-- Personne 1 : integration du hook dans l'interface.
-- Personne 2 : gestion des erreurs, JWT et tests API.
+### Non authentifie
 
-### Jour 3
+Status : `401` ou `403`
 
-- Integration finale.
-- Tests manuels avec backend.
-- Correction responsive et amelioration des messages d'erreur.
+Cause probable :
 
-## 9. Definition de termine
+- token absent ;
+- token invalide ;
+- token expire ;
+- mauvais format de header.
 
-Le module frontend est termine lorsque :
+Action frontend : rediriger vers login ou afficher `Session expiree, reconnectez-vous.`
 
-- un utilisateur connecte peut envoyer un message ;
-- la reponse de l'assistant s'affiche correctement ;
-- le meme `conversationId` est reutilise pendant la conversation ;
-- une nouvelle conversation peut etre demarree ;
-- les erreurs principales sont affichees clairement ;
-- l'interface reste utilisable sur mobile et desktop ;
-- les appels API utilisent bien le token JWT.
+### Backend ou OpenRouter indisponible
+
+Status : `503`
+
+Exemples :
+
+```json
+{
+  "message": "Could not connect to OpenRouter"
+}
+```
+
+```json
+{
+  "message": "OpenRouter API key is not configured"
+}
+```
+
+Action frontend : afficher `Le service IA est temporairement indisponible.`
+
+## 11. Test rapide avec curl
+
+### Login
+
+```bash
+curl -X POST "https://stage-vmp6.onrender.com/auth/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"<username>\",\"password\":\"<password>\"}"
+```
+
+### Chat
+
+```bash
+curl -X POST "https://stage-vmp6.onrender.com/chat" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <jwt-token>" \
+  -d "{\"message\":\"Bonjour\"}"
+```
+
+## 12. Checklist de livraison
+
+- `API_BASE_URL` pointe vers `https://stage-vmp6.onrender.com`.
+- Le frontend sait faire login ou register.
+- Les identifiants ne sont jamais hardcodes dans le code frontend.
+- Les champs login/register utilisent les valeurs saisies par l'utilisateur.
+- Sans token, l'utilisateur peut seulement acceder a Home, Login et Register.
+- Les pages protegees redirigent vers `/login` si l'utilisateur n'est pas connecte.
+- Le token JWT est ajoute dans `Authorization`.
+- Le premier message est envoye sans `conversationId`.
+- Les messages suivants reutilisent le `conversationId` retourne.
+- L'interface gere les etats `loading`, `error`, `empty` et `authenticated`.
+- Le bouton "Nouvelle conversation" remet `conversationId` a `null`.
+- Les erreurs `400`, `401/403` et `503` ont un message utilisateur clair.
+- Les tests manuels sont faits sur desktop et mobile.
+
+## 13. Notes backend
+
+Le backend utilise OpenRouter via `POST /chat/completions`. Dans `application.properties`, le modele par defaut est :
+
+```properties
+openrouter.model=${OPENROUTER_MODEL:openrouter/free}
+```
+
+Les variables serveur importantes sont :
+
+```text
+OPENROUTER_API_KEY=<cle-api-openrouter>
+OPENROUTER_MODEL=openrouter/free
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+```
+
+La cle OpenRouter doit rester cote backend. Elle ne doit jamais etre exposee dans le frontend.
